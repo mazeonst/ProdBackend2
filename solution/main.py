@@ -6,9 +6,13 @@ app = FastAPI()
 
 @app.get("/api/ping")
 def send():
-    return {"status": "ok"}
+    return {"status": "PROOOD"}
 
 if __name__ == "__main__":
-    server_address = os.getenv("SERVER_ADDRESS", "0.0.0.0:8080")
-    host, port = server_address.split(":")
-    uvicorn.run(app, host=host, port=int(port))
+    host, port = "0.0.0.0", 8080
+    addr = os.getenv("SERVER_ADDRESS")
+    if addr and ":" in addr:
+        splitted = addr.split(":")
+        host = splitted[0]
+        port = int(splitted[1])
+    uvicorn.run(app, host=host, port=port)
