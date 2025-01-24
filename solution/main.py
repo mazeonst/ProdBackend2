@@ -2,6 +2,9 @@ import os
 from fastapi import FastAPI
 import uvicorn
 
+
+SERVER_ADDRESS = os.getenv("SERVER_ADDRESS", "0.0.0.0:8080")
+
 app = FastAPI()
 
 @app.get("/api/ping")
