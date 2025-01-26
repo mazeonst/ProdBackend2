@@ -199,7 +199,6 @@ def check_password_rules(passw: str) -> bool:
         return False
     return True
 
-
 EMAIL_RE = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
 
 def is_valid_email(addr: str) -> bool:
@@ -242,6 +241,7 @@ def get_company_name(cid: str) -> str:
     if row:
         return row["name"]
     return "Unknown"
+
 
 # def promo_comments_count(pid: str) -> int:
 #   cn = connect_pg()
@@ -380,6 +380,8 @@ def get_user_history(limit: int=10, offset: int=0, acc=Depends(current_account))
     return JSONResponse(content=arr, headers={"X-Total-Count": str(tot)})
 
 
+
+
 @app.post("/api/business/auth/sign-up")
 def bus_signup(payload: dict = Body(...)):
     if not payload:
@@ -442,6 +444,7 @@ def bus_signin(payload: dict = Body(...)):
         cpg.close()
         raise HTTPException(401, "Неверный email или пароль")
 
+
     if not passverify(pwd, row["pass_hash"]):
         cu.close()
         cpg.close()
@@ -469,6 +472,7 @@ def create_business_promo(body: dict = Body(...), acc=Depends(current_account)):
     desc = body.get("description")
     if not isinstance(desc, str) or len(desc) < 10:
         raise HTTPException(400, "Invalid description")
+
 
     max_count = body.get("max_count")
     if not isinstance(max_count, int):
@@ -526,6 +530,7 @@ def create_business_promo(body: dict = Body(...), acc=Depends(current_account)):
             max_count
         )
     )
+
     cpg.commit()
     cu.close()
     cpg.close()
@@ -565,6 +570,7 @@ def list_company_promos(
 
     if wheres:
         base_query += " AND " + " AND ".join(wheres)
+
 
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
@@ -791,7 +797,7 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
     return res
 
 
-@app.get("/api/business/promo/{promo_id}/stat")      #/api/business/promo/{promo_id}/stat
+@app.get("/api/business/promo/{promo_id}/stat")
 def get_business_promo_stat(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Нет доступа")
@@ -898,6 +904,38 @@ def user_signup(body: dict = Body(...)):
     cpg.close()
 
     token = encode_jwt(uid, "user", 0)
+    return {"token": token}
+
+
+@app.post("/api/user/auth/sign-in")
+def user_signin(body: dict = Body(...)):
+    if not body:
+        raise HTTPException(400, "Некорректный запрос")
+    mail = body.get("email")
+    pwd = body.get("password")
+    if not mail or not pwd:
+        raise HTTPException(400, "Некорректные поля")
+    ml = mail.strip().lower()
+    cpg = connect_pg()
+    cu = cpg.cursor(cursor_factory=RealDictCursor)
+    cu.execute("SELECT * FROM accounts WHERE email=%s AND user_type='user'", (ml,))
+    row = cu.fetchone()
+    if not row:
+        cu.close()
+        cpg.close()
+        raise HTTPException(401, "Неверные email или пароль")
+    if not passverify(pwd, row["pass_hash"]):
+        cu.close()
+        cpg.close()
+        raise HTTPException(401, "Неверные email или пароль")
+
+    new_version = (row["token_version"] or 0) + 1
+    cu.execute("UPDATE accounts SET token_version=%s WHERE id=%s", (new_version, row["id"]))
+    cpg.commit()
+    cu.close()
+    cpg.close()
+
+    token = encode_jwt(str(row["id"]), "user", new_version)
     return {"token": token}
 
 
@@ -1081,6 +1119,8 @@ def unlike_promo(promo_id: str, acc=Depends(current_account)):
     return {"status": "ok"}
 
 
+
+
 @app.post("/api/user/promo/{promo_id}/comments", status_code=201)
 def add_comment_to_promo(promo_id: str, body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "user":
@@ -1189,6 +1229,7 @@ def delete_comment(promo_id: str, comment_id: str, acc=Depends(current_account))
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
 
+
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promo_comments WHERE id=%s AND promo_id=%s AND deleted=false", (comment_id, promo_id))
@@ -1261,6 +1302,9 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
     cache_key = f"antifraud:{email_lower}"
     cached_raw = redis_conn.get(cache_key)
     need_to_call = True
+
+
+
 
     if cached_raw:
         try:
