@@ -21,14 +21,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 HTTP_ADDR = os.getenv("HTTP_ADDR", "0.0.0.0:8080")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "postgres")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "postgres")
-REDIS_CONN_HOST = os.getenv("REDIS_CONN_HOST", "localhost")
-REDIS_CONN_PORT = os.getenv("REDIS_CONN_PORT", "6379")
-ANTI_FRAUD_HOST = os.getenv("ANTI_FRAUD_HOST", "localhost:9090")
+DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
+DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+DB_NAME = os.getenv("POSTGRES_DATABASE", "postgres")
+DB_USER = os.getenv("POSTGRES_USERNAME", "postgres")
+DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+REDIS_CONN_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_CONN_PORT = os.getenv("REDIS_PORT", "6379")
+
+ANTI_FRAUD_HOST = os.getenv("ANTIFRAUD_ADDRESS", "localhost:9090")
+
 JWT_RANDOM_SECRET = os.getenv(
     "JWT_RANDOM_SECRET",
     "THIS_IS_A_RANDOM_SECRET_" + "".join(random.choices(string.ascii_letters + string.digits, k=32))
