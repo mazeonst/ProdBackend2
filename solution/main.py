@@ -195,7 +195,10 @@ def check_password_rules(passw: str) -> bool:
         return False
     if not re.search(r"\d", passw):
         return False
+    if not re.search(r"[!@#$%^&*]", passw):
+        return False
     return True
+
 
 EMAIL_RE = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
 
