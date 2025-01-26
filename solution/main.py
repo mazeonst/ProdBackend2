@@ -190,8 +190,17 @@ def read_json_arr(s: str):
         return []
 
 def check_password_rules(passw: str) -> bool:
-    return 8 <= len(passw) <= 60
+    if not (8 <= len(passw) <= 60):
+        return False
+    if not re.search(r"\d", passw):
+        return False
+    return True
 
+EMAIL_RE = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
+
+def is_valid_email(addr: str) -> bool:
+    return bool(EMAIL_RE.match(addr))
+    
 def get_promo_likes(pid: str) -> int:
     cn = connect_pg()
     cu = cn.cursor()
@@ -300,7 +309,7 @@ def build_comment(comment_id: str):
         raise HTTPException(status_code=404, detail="Комментарий не существует")
 
     user_info = get_user_data(row["user_id"])
-    dt = row["updated_at"] or row["created_at"]
+    dt = row["created_at"]
     return {
         "id": str(row["id"]),
         "text": row["text"],
@@ -311,7 +320,7 @@ def build_comment(comment_id: str):
             "avatar_url": user_info["avatar_url"]
         }
     }
-
+    
 def current_account(authorization: str = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Не авторизован")
@@ -344,18 +353,55 @@ def current_account(authorization: str = Header(None)):
 def handle_ping():
     return {"status": "PROOOD"}
 
+@app.get("/api/user/promo/history")
+
+def get_user_history(limit: int=10, offset: int=0, acc=Depends(current_account)):
+    if acc["user_type"] != "user":
+        raise HTTPException(401, "Нет доступа")
+
+    cpg = connect_pg()
+    cu = cpg.cursor(cursor_factory=RealDictCursor)
+    cu.execute("SELECT COUNT(*) as cnt FROM promo_activations WHERE user_id=%s", (acc["id"],))
+    tot = cu.fetchone()["cnt"]
+
+    cu.execute(
+        """
+        SELECT promos.*, promo_activations.activated_at as act_time
+        FROM promo_activations
+        JOIN promos ON promo_activations.promo_id=promos.id
+        WHERE promo_activations.user_id=%s
+        ORDER BY promo_activations.activated_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        (acc["id"], limit, offset)
+    )
+    rows = cu.fetchall()
+    cu.close()
+    cpg.close()
+
+    arr = []
+    for r in rows:
+        arr.append(assemble_for_user(r, acc["id"]))
+    return JSONResponse(content=arr, headers={"X-Total-Count": str(tot)})
+
+
 
 @app.post("/api/business/auth/sign-up")
-
 def bus_signup(payload: dict = Body(...)):
+    if not payload:
+        raise HTTPException(400, "Пустой запрос")
+
     em = payload.get("email")
     pwd = payload.get("password")
     nm = payload.get("name")
 
     if not (em and pwd and nm):
         raise HTTPException(400, "Некорректные данные")
-
+        
     em_l = em.strip().lower()
+    if not is_valid_email(em_l):
+        raise HTTPException(400, "Некорректный email")
+
     if not check_password_rules(pwd):
         raise HTTPException(400, "Пароль не удовлетворяет требованиям")
 
@@ -383,8 +429,10 @@ def bus_signup(payload: dict = Body(...)):
 
 
 @app.post("/api/business/auth/sign-in")
-
 def bus_signin(payload: dict = Body(...)):
+    if not payload:
+        raise HTTPException(400, "Пустои запрос")
+
     em = payload.get("email")
     pwd = payload.get("password")
     if not em or not pwd:
@@ -641,6 +689,12 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
         raise HTTPException(403, "Чужой промокод")
 
     dsc = body.get("description", existing["description"])
+
+
+    
+    if dsc is not None and isinstance(dsc, str) and len(dsc) < 10:
+        raise HTTPException(400, "description слишком короткий")
+
     img = body.get("image_url", existing["image_url"])
     af = body.get("active_from", existing["active_from"])
     au = body.get("active_until", existing["active_until"])
@@ -852,37 +906,66 @@ def user_signup(body: dict = Body(...)):
     return {"token": token}
 
 
-@app.post("/api/user/auth/sign-in")
-def user_signin(body: dict = Body(...)):
+@app.post("/api/user/auth/sign-up")
+def user_signup(body: dict = Body(...)):
+    if not body:
+        raise HTTPException(400, "Пустой запрос")
+
     mail = body.get("email")
-    pasw = body.get("password")
-    if not mail or not pasw:
+    passwd = body.get("password")
+    if not mail or not passwd:
         raise HTTPException(400, "Некорректные данные")
+
     ml = mail.strip().lower()
+    if not is_valid_email(ml):
+        raise HTTPException(400, "Некорректный email")
+
+    if not check_password_rules(passwd):
+        raise HTTPException(400, "Пароль не удовлетворяет требованиям")
+
+    nm = body.get("name")
+    sn = body.get("surname")
+    
+    if not nm or not sn:
+        raise HTTPException(400, "Некорректные данные (name, surname)")
+    if nm.strip() == "" or sn.strip() == "":
+        raise HTTPException(400, "Пустые name/surname")
+
+    av = body.get("avatar_url")
+    other = body.get("other", {})
+    ag = other.get("age")
+    ctr = other.get("country")
+    cats = other.get("categories", [])
 
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM accounts WHERE email=%s AND user_type='user'", (ml,))
-    user_row = cu.fetchone()
-    if not user_row:
+    ex = cu.fetchone()
+    if ex:
         cu.close()
         cpg.close()
-        raise HTTPException(401, "Неверный email или пароль")
+        raise HTTPException(409, "Такой email уже зарегистрирован")
 
-    if not passverify(pasw, user_row["pass_hash"]):
-        cu.close()
-        cpg.close()
-        raise HTTPException(401, "Неверный email или пароль")
+    uid = make_uuid()
+    hashed = pass_hash(passwd)
+    cts = json.dumps(cats) if isinstance(cats, list) else None
 
-    new_ver = (user_row["token_version"] or 0) + 1
-    cu.execute("UPDATE accounts SET token_version=%s WHERE id=%s", (new_ver, user_row["id"]))
+    cu.execute(
+        """
+        INSERT INTO accounts(
+            id, email, pass_hash, name, surname, user_type,
+            avatar_url, age, country, categories, token_version
+        )
+        VALUES(%s,%s,%s,%s,%s,'user',%s,%s,%s,%s,0)
+        """,
+        (uid, ml, hashed, nm, sn, av, ag, ctr, cts)
+    )
     cpg.commit()
     cu.close()
     cpg.close()
 
-    token = encode_jwt(str(user_row["id"]), "user", new_ver)
+    token = encode_jwt(uid, "user", 0)
     return {"token": token}
-
 
 
 @app.get("/api/user/profile")
@@ -907,12 +990,17 @@ def get_profile(acc=Depends(current_account)):
 @app.patch("/api/user/profile")
 def update_profile(body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "user":
-        raise HTTPException(401, "Неа доступа")
+        raise HTTPException(401, "Нет доступа")
 
     new_n = body.get("name", acc["name"])
     new_s = body.get("surname", acc["surname"])
     new_av = body.get("avatar_url", acc["avatar_url"])
     new_p = body.get("password")
+
+    if new_n is not None and new_n.strip() == "":
+        raise HTTPException(400, "Name не может быть пустым")
+    if new_s is not None and new_s.strip() == "":
+        raise HTTPException(400, "Surname не может быть пустиым")
 
     phash = None
     if new_p is not None:
@@ -963,17 +1051,25 @@ def user_feed_view(
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
 
-
+    user_country = (acc["country"] or "").strip().lower()
+    user_age = acc["age"]
 
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
-    q = "SELECT * FROM promos WHERE 1=1"
+
+    q = "SELECT * FROM promos WHERE active=true"
     wh = []
     pr = []
 
-    if active is not None:
-        wh.append("active=%s")
-        pr.append(active)
+    wh.append("(target_country IS NULL OR LOWER(target_country)=%s)")
+    pr.append(user_country)
+
+    if user_age is not None:
+        wh.append("(target_age_from IS NULL OR %s >= target_age_from)")
+        pr.append(user_age)
+        wh.append("(target_age_until IS NULL OR %s <= target_age_until)")
+        pr.append(user_age)
+
     if category:
         wh.append("LOWER(target_categories)::text LIKE %s")
         cat_search = f'%"{category.strip().lower()}"%'
@@ -984,6 +1080,7 @@ def user_feed_view(
 
     order_clause = " ORDER BY created_at DESC"
     lo_clause = f" LIMIT {limit} OFFSET {offset}"
+
     count_sql = f"SELECT COUNT(*) as cnt FROM ({q}) as sub"
     cu.execute(count_sql, tuple(pr))
     total = cu.fetchone()["cnt"]
@@ -997,7 +1094,11 @@ def user_feed_view(
     result = []
     for r in rows:
         result.append(assemble_for_user(r, acc["id"]))
+
     return JSONResponse(content=result, headers={"X-Total-Count": str(total)})
+
+
+
 
 @app.get("/api/user/promo/{promo_id}")
 
@@ -1315,36 +1416,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
     cpg.close()
     return {"promo": code_val}
 
-
-@app.get("/api/user/promo/history")
-def get_user_history(limit: int=10, offset: int=0, acc=Depends(current_account)):
-    if acc["user_type"] != "user":
-        raise HTTPException(401, "Нет доступа")
-
-    cpg = connect_pg()
-    cu = cpg.cursor(cursor_factory=RealDictCursor)
-    cu.execute("SELECT COUNT(*) as cnt FROM promo_activations WHERE user_id=%s", (acc["id"],))
-    tot = cu.fetchone()["cnt"]
-
-    cu.execute(
-        """
-        SELECT promos.*, promo_activations.activated_at as act_time
-        FROM promo_activations
-        JOIN promos ON promo_activations.promo_id=promos.id
-        WHERE promo_activations.user_id=%s
-        ORDER BY promo_activations.activated_at DESC
-        LIMIT %s OFFSET %s
-        """,
-        (acc["id"], limit, offset)
-    )
-    rows = cu.fetchall()
-    cu.close()
-    cpg.close()
-
-    arr = []
-    for r in rows:
-        arr.append(assemble_for_user(r, acc["id"]))
-    return JSONResponse(content=arr, headers={"X-Total-Count": str(tot)})
 
 
 
