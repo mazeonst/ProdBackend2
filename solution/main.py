@@ -63,8 +63,6 @@ def connect_pg():
     )
 
 
-
-
 def init_tables():
     c = connect_pg()
     m = c.cursor()
@@ -154,9 +152,6 @@ redis_conn = redis.Redis(
     port=int(REDIS_CONN_PORT),
     db=0
 )
-
-
-
 
 
 def make_uuid() -> str:
@@ -549,7 +544,9 @@ def list_company_promos(
         count_query += " AND " + " AND ".join(wheres)
     cu.execute(count_query, tuple(params))
     total = cu.fetchone()["cnt"]
-    final_query = f"{base_query} {order_sql} LIMIT {limit} OFFSET {offset}"
+    final_query = f"{base_query} {order_sql} LIMIT %s OFFSET %s"
+    params.append(limit)
+    params.append(offset)
     cu.execute(final_query, tuple(params))
     rows = cu.fetchall()
     cu.close()
@@ -664,6 +661,10 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
         new_age_u = target_info.get("age_until", existing["target_age_until"])
         new_t_country = target_info.get("country", existing["target_country"])
         new_t_cats = target_info.get("categories", read_json_arr(existing["target_categories"]))
+        if new_age_f is not None and new_age_u is not None and new_age_f > new_age_u:
+            cu.close()
+            cpg.close()
+            raise HTTPException(400, "Некорректный таргет")
     else:
         new_age_f = existing["target_age_from"]
         new_age_u = existing["target_age_until"]
@@ -1040,7 +1041,6 @@ def like_promo(promo_id: str, acc=Depends(current_account)):
 @app.delete("/api/user/promo/{promo_id}/like")
 def unlike_promo(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
-
         raise HTTPException(401, "Нет доступа")
     check_promo_exists(promo_id)
     cpg = connect_pg()
@@ -1103,7 +1103,6 @@ def get_promo_comments(
     for r in rows:
         result.append(build_comment(r["id"]))
     return JSONResponse(content=result, headers={"X-Total-Count": str(total)})
-
 
 
 @app.get("/api/user/promo/{promo_id}/comments/{comment_id}")
@@ -1295,7 +1294,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
     cpg.close()
     return {"promo": code_val}
 
-
 #uvicorn main:app --reload
 #curl http://localhost:8080/api/ping
 
@@ -1310,6 +1308,6 @@ if __name__ == "__main__":
         maybe_port = os.getenv("SERVER_PORT")
         if maybe_port:
             port = int(maybe_port)
-            
+        
     uvicorn.run(app, host=host, port=port)
 
