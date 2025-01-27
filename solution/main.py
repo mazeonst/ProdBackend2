@@ -11,6 +11,8 @@ import redis
 import uvicorn
 import requests
 
+from typing import Optional
+
 from psycopg2.extras import RealDictCursor
 from passlib.hash import bcrypt
 from jose import jwt, JWTError
@@ -40,7 +42,6 @@ JWT_RANDOM_SECRET = os.getenv(
 JWT_SIGN_ALGO = "HS256"
 
 
-
 app = FastAPI()
 
 app.add_middleware(
@@ -52,8 +53,6 @@ app.add_middleware(
 )
 
 
-
-
 def connect_pg():
     return psycopg2.connect(
         host=DB_HOST,
@@ -62,6 +61,7 @@ def connect_pg():
         user=DB_USER,
         password=DB_PASS
     )
+
 
 
 
@@ -149,12 +149,14 @@ def init_tables():
 
 init_tables()
 
-
 redis_conn = redis.Redis(
     host=REDIS_CONN_HOST,
     port=int(REDIS_CONN_PORT),
     db=0
 )
+
+
+
 
 
 def make_uuid() -> str:
@@ -204,6 +206,9 @@ EMAIL_RE = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
 def is_valid_email(addr: str) -> bool:
     return bool(EMAIL_RE.match(addr))
 
+def is_valid_url(s: str) -> bool:
+    return bool(re.match(r'^https?://', s.strip(), re.IGNORECASE))
+
 def get_promo_likes(pid: str) -> int:
     cn = connect_pg()
     cu = cn.cursor()
@@ -241,7 +246,6 @@ def get_company_name(cid: str) -> str:
     if row:
         return row["name"]
     return "Unknown"
-
 
 # def promo_comments_count(pid: str) -> int:
 #   cn = connect_pg()
@@ -301,10 +305,8 @@ def build_comment(comment_id: str):
     row = cu.fetchone()
     cu.close()
     cn.close()
-
     if not row or row["deleted"]:
         raise HTTPException(status_code=404, detail="Комментарий не существует")
-
     user_info = get_user_data(row["user_id"])
     dt = row["created_at"]
     return {
@@ -322,17 +324,13 @@ def current_account(authorization: str = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Не авторизован")
     token_data = decode_jwt(authorization[7:].strip())
-
     if not token_data:
         raise HTTPException(status_code=401, detail="Не авторизован")
-
     sub = token_data.get("sub")
     tp = token_data.get("tp")
     v = token_data.get("ver")
-
     if not sub or not tp or v is None:
         raise HTTPException(status_code=401, detail="Не авторизован")
-
     cpg = connect_pg()
     curs = cpg.cursor(cursor_factory=RealDictCursor)
     curs.execute("SELECT * FROM accounts WHERE id=%s", (sub,))
@@ -353,12 +351,10 @@ def handle_ping():
 def get_user_history(limit: int=10, offset: int=0, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT COUNT(*) as cnt FROM promo_activations WHERE user_id=%s", (acc["id"],))
     tot = cu.fetchone()["cnt"]
-
     cu.execute(
         """
         SELECT promos.*, promo_activations.activated_at as act_time
@@ -373,34 +369,26 @@ def get_user_history(limit: int=10, offset: int=0, acc=Depends(current_account))
     rows = cu.fetchall()
     cu.close()
     cpg.close()
-
     arr = []
     for r in rows:
         arr.append(assemble_for_user(r, acc["id"]))
     return JSONResponse(content=arr, headers={"X-Total-Count": str(tot)})
 
 
-
-
 @app.post("/api/business/auth/sign-up")
 def bus_signup(payload: dict = Body(...)):
     if not payload:
         raise HTTPException(400, "Пустой запрос")
-
     em = payload.get("email")
     pwd = payload.get("password")
     nm = payload.get("name")
-
     if not (em and pwd and nm):
         raise HTTPException(400, "Некорректные данные")
-
     em_l = em.strip().lower()
     if not is_valid_email(em_l):
         raise HTTPException(400, "Некорректный email")
-
     if not check_password_rules(pwd):
         raise HTTPException(400, "Пароль не удовлетворяет требованиям")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM accounts WHERE email=%s", (em_l,))
@@ -409,7 +397,6 @@ def bus_signup(payload: dict = Body(...)):
         cu.close()
         cpg.close()
         raise HTTPException(409, "Такой email уже зарегистрирован")
-
     aid = make_uuid()
     phash = pass_hash(pwd)
     cu.execute(
@@ -428,12 +415,10 @@ def bus_signup(payload: dict = Body(...)):
 def bus_signin(payload: dict = Body(...)):
     if not payload:
         raise HTTPException(400, "Пустои запрос")
-
     em = payload.get("email")
     pwd = payload.get("password")
     if not em or not pwd:
         raise HTTPException(400, "Некорректные данные")
-
     e_l = em.strip().lower()
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
@@ -443,19 +428,15 @@ def bus_signin(payload: dict = Body(...)):
         cu.close()
         cpg.close()
         raise HTTPException(401, "Неверный email или пароль")
-
-
     if not passverify(pwd, row["pass_hash"]):
         cu.close()
         cpg.close()
         raise HTTPException(401, "Неверный email или пароль")
-
     new_version = (row["token_version"] or 0) + 1
     cu.execute("UPDATE accounts SET token_version=%s WHERE id=%s", (new_version, row["id"]))
     cpg.commit()
     cu.close()
     cpg.close()
-
     token = encode_jwt(str(row["id"]), "company", new_version)
     return {"token": token}
 
@@ -464,23 +445,22 @@ def bus_signin(payload: dict = Body(...)):
 def create_business_promo(body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Неа доступа")
-
     mode = body.get("mode")
-    if mode not in ("COMMON", "UNIQUE"):
-        raise HTTPException(400, "mode must be COMMON or UNIQUE")
-
     desc = body.get("description")
     if not isinstance(desc, str) or len(desc) < 10:
         raise HTTPException(400, "Invalid description")
-
-
+    if "target" not in body:
+        raise HTTPException(400, "Требуется target")
+    target_obj = body["target"]
+    if not isinstance(target_obj, dict):
+        raise HTTPException(400, "target должен быть объектом")
     max_count = body.get("max_count")
     if not isinstance(max_count, int):
         raise HTTPException(400, "max_count обязателен")
-
     pr_common = body.get("promo_common")
     pr_unique = body.get("promo_unique")
-
+    if mode not in ("COMMON", "UNIQUE"):
+        raise HTTPException(400, "mode must be COMMON or UNIQUE")
     if mode == "COMMON":
         if not isinstance(pr_common, str):
             raise HTTPException(400, "promo_common нужен для COMMON")
@@ -495,18 +475,14 @@ def create_business_promo(body: dict = Body(...), acc=Depends(current_account)):
             raise HTTPException(400, "promo_common не используется в UNIQUE")
         pr_common_val = None
         pr_unique_val = json.dumps(pr_unique)
-
-    target_data = body.get("target", {})
-    age_from = target_data.get("age_from")
-    age_to = target_data.get("age_until")
-    t_country = target_data.get("country")
-    t_cats = target_data.get("categories")
-    t_cats_str = json.dumps(t_cats) if isinstance(t_cats, list) else None
-
     af = body.get("active_from")
     au = body.get("active_until")
     img = body.get("image_url")
-
+    age_from = target_obj.get("age_from")
+    age_to = target_obj.get("age_until")
+    t_country = target_obj.get("country")
+    t_cats = target_obj.get("categories")
+    t_cats_str = json.dumps(t_cats) if isinstance(t_cats, list) else None
     pid = make_uuid()
     cpg = connect_pg()
     cu = cpg.cursor()
@@ -530,7 +506,6 @@ def create_business_promo(body: dict = Body(...), acc=Depends(current_account)):
             max_count
         )
     )
-
     cpg.commit()
     cu.close()
     cpg.close()
@@ -547,7 +522,6 @@ def list_company_promos(
 ):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Нет доступа")
-
     base_query = "SELECT * FROM promos WHERE company_id=%s"
     params = [acc["id"]]
     wheres = []
@@ -556,9 +530,7 @@ def list_company_promos(
         order_sql = "ORDER BY active_from DESC NULLS LAST"
     elif sort_by == "active_until":
         order_sql = "ORDER BY active_until DESC NULLS LAST"
-
     if country:
-        wheres.append("(target_country IS NULL OR LOWER(target_country)=ANY(%s))")
         cs = set()
         for ct in country:
             if "," in ct:
@@ -566,28 +538,22 @@ def list_company_promos(
                     cs.add(piece.strip().lower())
             else:
                 cs.add(ct.strip().lower())
+        wheres.append("LOWER(target_country)=ANY(%s)")
         params.append(list(cs))
-
     if wheres:
         base_query += " AND " + " AND ".join(wheres)
-
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
-
     count_query = f"SELECT COUNT(*) as cnt FROM promos WHERE company_id=%s"
     if wheres:
         count_query += " AND " + " AND ".join(wheres)
-
     cu.execute(count_query, tuple(params))
     total = cu.fetchone()["cnt"]
-
     final_query = f"{base_query} {order_sql} LIMIT {limit} OFFSET {offset}"
     cu.execute(final_query, tuple(params))
     rows = cu.fetchall()
     cu.close()
     cpg.close()
-
     data_out = []
     for r in rows:
         item = {
@@ -613,7 +579,6 @@ def list_company_promos(
             }
         }
         data_out.append(item)
-
     return JSONResponse(
         content=data_out,
         headers={"X-Total-Count": str(total)}
@@ -624,7 +589,6 @@ def list_company_promos(
 def get_company_promo(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promos WHERE id=%s", (promo_id,))
@@ -637,7 +601,6 @@ def get_company_promo(promo_id: str, acc=Depends(current_account)):
         cu.close()
         cpg.close()
         raise HTTPException(403, "Чужой промокод")
-
     out = {
         "promo_id": str(row["id"]),
         "company_id": str(row["company_id"]),
@@ -669,7 +632,6 @@ def get_company_promo(promo_id: str, acc=Depends(current_account)):
 def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promos WHERE id=%s", (promo_id,))
@@ -682,18 +644,20 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
         cu.close()
         cpg.close()
         raise HTTPException(403, "Чужой промокод")
-
     dsc = body.get("description", existing["description"])
     if dsc is not None and isinstance(dsc, str) and len(dsc) < 10:
         cu.close()
         cpg.close()
         raise HTTPException(400, "description слишком короткий")
-
     img = body.get("image_url", existing["image_url"])
+    if "image_url" in body:
+        if img is not None and not isinstance(img, str):
+            cu.close()
+            cpg.close()
+            raise HTTPException(400, "Некорректный image_url")
     af = body.get("active_from", existing["active_from"])
     au = body.get("active_until", existing["active_until"])
     new_mc = body.get("max_count", existing["max_count"])
-
     target_info = body.get("target")
     if target_info and isinstance(target_info, dict):
         new_age_f = target_info.get("age_from", existing["target_age_from"])
@@ -705,7 +669,6 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
         new_age_u = existing["target_age_until"]
         new_t_country = existing["target_country"]
         new_t_cats = read_json_arr(existing["target_categories"])
-
     used_c = existing["used_count"] or 0
     if existing["mode"] == "COMMON":
         if used_c > new_mc:
@@ -718,13 +681,11 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
             cpg.close()
             raise HTTPException(400, "max_count должен быть 1 для UNIQUE")
         new_mc = 1
-
     nowd = datetime.date.today()
     if isinstance(af, str):
         af = datetime.datetime.strptime(af, "%Y-%m-%d").date()
     if isinstance(au, str):
         au = datetime.datetime.strptime(au, "%Y-%m-%d").date()
-
     new_active = True
     if used_c >= new_mc:
         new_active = False
@@ -732,7 +693,6 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
         new_active = False
     if au and nowd > au:
         new_active = False
-
     if existing["mode"] == "COMMON" and new_mc > used_c:
         if af and nowd < af:
             new_active = False
@@ -740,9 +700,7 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
             new_active = False
         if new_active is not False:
             new_active = True
-
     jcats = json.dumps(new_t_cats)
-
     cu.execute(
         """
         UPDATE promos
@@ -771,7 +729,6 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
     cpg.commit()
     cu.close()
     cpg.close()
-
     res = {
         "promo_id": str(fresh["id"]),
         "company_id": str(fresh["company_id"]),
@@ -801,7 +758,6 @@ def patch_company_promo(promo_id: str, body: dict = Body(...), acc=Depends(curre
 def get_business_promo_stat(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "company":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promos WHERE id=%s", (promo_id,))
@@ -814,10 +770,8 @@ def get_business_promo_stat(promo_id: str, acc=Depends(current_account)):
         cu.close()
         cpg.close()
         raise HTTPException(403, "Чужой промокод")
-
     cu.execute("SELECT COUNT(*) as cnt FROM promo_activations WHERE promo_id=%s", (promo_id,))
     total = cu.fetchone()["cnt"]
-
     cu.execute(
         """
         SELECT LOWER(a.country) as c, COUNT(pa.id) as cnt
@@ -831,7 +785,6 @@ def get_business_promo_stat(promo_id: str, acc=Depends(current_account)):
     rows = cu.fetchall()
     cu.close()
     cpg.close()
-
     filtered = [x for x in rows if x["c"]]
     filtered.sort(key=lambda x: x["c"])
     arr = []
@@ -850,32 +803,29 @@ def get_business_promo_stat(promo_id: str, acc=Depends(current_account)):
 def user_signup(body: dict = Body(...)):
     if not body:
         raise HTTPException(400, "Пустой запрос")
-
     mail = body.get("email")
     passwd = body.get("password")
     if not mail or not passwd:
         raise HTTPException(400, "Некорректные данные")
-
     ml = mail.strip().lower()
     if not is_valid_email(ml):
         raise HTTPException(400, "Некорректный email")
-
     if not check_password_rules(passwd):
         raise HTTPException(400, "Пароль не удовлетворяет требованиям")
-
     nm = body.get("name")
     sn = body.get("surname")
     if not nm or not sn:
         raise HTTPException(400, "Некорректные данные (name, surname)")
     if nm.strip() == "" or sn.strip() == "":
         raise HTTPException(400, "Пустые name/surname")
-
     av = body.get("avatar_url")
+    if av is not None:
+        if not isinstance(av, str) or not is_valid_url(av):
+            raise HTTPException(400, "Некорректная ссылка на аватар")
     other = body.get("other", {})
     ag = other.get("age")
     ctr = other.get("country")
     cats = other.get("categories", [])
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM accounts WHERE email=%s AND user_type='user'", (ml,))
@@ -884,11 +834,9 @@ def user_signup(body: dict = Body(...)):
         cu.close()
         cpg.close()
         raise HTTPException(409, "Такой email уже зарегистрирован")
-
     uid = make_uuid()
     hashed = pass_hash(passwd)
     cts = json.dumps(cats) if isinstance(cats, list) else None
-
     cu.execute(
         """
         INSERT INTO accounts(
@@ -902,17 +850,16 @@ def user_signup(body: dict = Body(...)):
     cpg.commit()
     cu.close()
     cpg.close()
-
     token = encode_jwt(uid, "user", 0)
     return {"token": token}
 
 
 @app.post("/api/user/auth/sign-in")
-def user_signin(body: dict = Body(...)):
-    if not body:
+def user_signin(payload: Optional[dict] = Body(None)):
+    if not payload:
         raise HTTPException(400, "Некорректный запрос")
-    mail = body.get("email")
-    pwd = body.get("password")
+    mail = payload.get("email")
+    pwd = payload.get("password")
     if not mail or not pwd:
         raise HTTPException(400, "Некорректные поля")
     ml = mail.strip().lower()
@@ -928,13 +875,11 @@ def user_signin(body: dict = Body(...)):
         cu.close()
         cpg.close()
         raise HTTPException(401, "Неверные email или пароль")
-
     new_version = (row["token_version"] or 0) + 1
     cu.execute("UPDATE accounts SET token_version=%s WHERE id=%s", (new_version, row["id"]))
     cpg.commit()
     cu.close()
     cpg.close()
-
     token = encode_jwt(str(row["id"]), "user", new_version)
     return {"token": token}
 
@@ -943,7 +888,6 @@ def user_signin(body: dict = Body(...)):
 def get_profile(acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     cat_arr = read_json_arr(acc["categories"])
     return {
         "name": acc["name"],
@@ -962,26 +906,24 @@ def get_profile(acc=Depends(current_account)):
 def update_profile(body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     new_n = body.get("name", acc["name"])
     new_s = body.get("surname", acc["surname"])
     new_av = body.get("avatar_url", acc["avatar_url"])
     new_p = body.get("password")
-
     if new_n is not None and new_n.strip() == "":
         raise HTTPException(400, "Name не может быть пустым")
     if new_s is not None and new_s.strip() == "":
         raise HTTPException(400, "Surname не может быть пустиым")
-
+    if "avatar_url" in body:
+        if new_av is not None and (not isinstance(new_av, str) or not is_valid_url(new_av)):
+            raise HTTPException(400, "Некорректный url аватара")
     phash = None
     if new_p is not None:
         if not check_password_rules(new_p):
             raise HTTPException(400, "Пароль неправильный")
         phash = pass_hash(new_p)
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
-
     sql = "UPDATE accounts SET name=%s, surname=%s, avatar_url=%s"
     params = [new_n, new_s, new_av]
     if phash:
@@ -989,13 +931,11 @@ def update_profile(body: dict = Body(...), acc=Depends(current_account)):
         params.append(phash)
     sql += " WHERE id=%s RETURNING *"
     params.append(acc["id"])
-
     cu.execute(sql, tuple(params))
     row = cu.fetchone()
     cpg.commit()
     cu.close()
     cpg.close()
-
     cat_arr = read_json_arr(row["categories"])
     return {
         "name": row["name"],
@@ -1020,20 +960,22 @@ def user_feed_view(
 ):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     user_country = (acc["country"] or "").strip().lower()
     user_age = acc["age"]
-
+    nowd = datetime.date.today()
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
-
-    q = "SELECT * FROM promos WHERE active=true"
+    q = """
+        SELECT * FROM promos
+        WHERE
+          used_count < max_count
+          AND (active_from IS NULL OR %s >= active_from)
+          AND (active_until IS NULL OR %s <= active_until)
+    """
+    pr = [nowd, nowd]
     wh = []
-    pr = []
-
     wh.append("(target_country IS NULL OR LOWER(target_country)=%s)")
     pr.append(user_country)
-
     if user_age is not None:
         wh.append("(target_age_from IS NULL OR %s >= target_age_from)")
         pr.append(user_age)
@@ -1044,27 +986,21 @@ def user_feed_view(
         wh.append("LOWER(target_categories)::text LIKE %s")
         cat_search = f'%"{category.strip().lower()}"%'
         pr.append(cat_search)
-
     if wh:
         q += " AND " + " AND ".join(wh)
-
-    order_clause = " ORDER BY created_at DESC"
-    lo_clause = f" LIMIT {limit} OFFSET {offset}"
-
-    count_sql = f"SELECT COUNT(*) as cnt FROM ({q}) as sub"
-    cu.execute(count_sql, tuple(pr))
+    q_count = f"SELECT COUNT(*) as cnt FROM ({q}) sub"
+    cu.execute(q_count, tuple(pr))
     total = cu.fetchone()["cnt"]
-
-    final_sql = q + order_clause + lo_clause
-    cu.execute(final_sql, tuple(pr))
+    q += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
+    pr.append(limit)
+    pr.append(offset)
+    cu.execute(q, tuple(pr))
     rows = cu.fetchall()
     cu.close()
     cpg.close()
-
     result = []
     for r in rows:
         result.append(assemble_for_user(r, acc["id"]))
-
     return JSONResponse(content=result, headers={"X-Total-Count": str(total)})
 
 
@@ -1072,17 +1008,14 @@ def user_feed_view(
 def get_promo_for_user(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promos WHERE id=%s", (promo_id,))
     row = cu.fetchone()
     cu.close()
     cpg.close()
-
     if not row:
         raise HTTPException(404, "Не найдено")
-
     return assemble_for_user(row, acc["id"])
 
 
@@ -1090,10 +1023,10 @@ def get_promo_for_user(promo_id: str, acc=Depends(current_account)):
 def like_promo(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     check_promo_exists(promo_id)
     cpg = connect_pg()
     cu = cpg.cursor()
+
     cu.execute(
         "INSERT INTO promo_likes(promo_id,user_id) VALUES(%s,%s) ON CONFLICT DO NOTHING",
         (promo_id, acc["id"])
@@ -1107,8 +1040,8 @@ def like_promo(promo_id: str, acc=Depends(current_account)):
 @app.delete("/api/user/promo/{promo_id}/like")
 def unlike_promo(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
-        raise HTTPException(401, "Нет доступа")
 
+        raise HTTPException(401, "Нет доступа")
     check_promo_exists(promo_id)
     cpg = connect_pg()
     cu = cpg.cursor()
@@ -1119,18 +1052,14 @@ def unlike_promo(promo_id: str, acc=Depends(current_account)):
     return {"status": "ok"}
 
 
-
-
 @app.post("/api/user/promo/{promo_id}/comments", status_code=201)
 def add_comment_to_promo(promo_id: str, body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     check_promo_exists(promo_id)
     txt = body.get("text")
     if not txt or len(txt) < 10 or len(txt) > 1000:
         raise HTTPException(400, "Неверный текст")
-
     cm_id = make_uuid()
     cpg = connect_pg()
     cu = cpg.cursor()
@@ -1153,7 +1082,6 @@ def get_promo_comments(
 ):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     check_promo_exists(promo_id)
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
@@ -1171,18 +1099,17 @@ def get_promo_comments(
     rows = cu.fetchall()
     cu.close()
     cpg.close()
-
     result = []
     for r in rows:
         result.append(build_comment(r["id"]))
     return JSONResponse(content=result, headers={"X-Total-Count": str(total)})
 
 
+
 @app.get("/api/user/promo/{promo_id}/comments/{comment_id}")
 def get_one_comment(promo_id: str, comment_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     check_promo_exists(promo_id)
     cpg = connect_pg()
     cu = cpg.cursor()
@@ -1199,11 +1126,9 @@ def get_one_comment(promo_id: str, comment_id: str, acc=Depends(current_account)
 def edit_comment(promo_id: str, comment_id: str, body: dict = Body(...), acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     new_txt = body.get("text")
     if not new_txt or len(new_txt) < 10 or len(new_txt) > 1000:
         raise HTTPException(400, "Неверный текст")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promo_comments WHERE id=%s AND promo_id=%s AND deleted=false", (comment_id, promo_id))
@@ -1216,7 +1141,6 @@ def edit_comment(promo_id: str, comment_id: str, body: dict = Body(...), acc=Dep
         cu.close()
         cpg.close()
         raise HTTPException(403, "Чужой комментарий")
-
     cu.execute("UPDATE promo_comments SET text=%s, updated_at=NOW() WHERE id=%s", (new_txt, comment_id))
     cpg.commit()
     cu.close()
@@ -1228,8 +1152,6 @@ def edit_comment(promo_id: str, comment_id: str, body: dict = Body(...), acc=Dep
 def delete_comment(promo_id: str, comment_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promo_comments WHERE id=%s AND promo_id=%s AND deleted=false", (comment_id, promo_id))
@@ -1242,7 +1164,6 @@ def delete_comment(promo_id: str, comment_id: str, acc=Depends(current_account))
         cu.close()
         cpg.close()
         raise HTTPException(403, "Чужой комментарий")
-
     cu.execute("UPDATE promo_comments SET deleted=true WHERE id=%s", (comment_id,))
     cpg.commit()
     cu.close()
@@ -1254,7 +1175,6 @@ def delete_comment(promo_id: str, comment_id: str, acc=Depends(current_account))
 def activate_code(promo_id: str, acc=Depends(current_account)):
     if acc["user_type"] != "user":
         raise HTTPException(401, "Нет доступа")
-
     cpg = connect_pg()
     cu = cpg.cursor(cursor_factory=RealDictCursor)
     cu.execute("SELECT * FROM promos WHERE id=%s", (promo_id,))
@@ -1263,12 +1183,10 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
         cu.close()
         cpg.close()
         raise HTTPException(404, "Не найдено")
-
     if not promo["active"]:
         cu.close()
         cpg.close()
         raise HTTPException(403, "Промокод неактивен")
-
     user_age = acc["age"]
     user_ctr = acc["country"]
     af = promo["target_age_from"]
@@ -1281,13 +1199,11 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
         cu.close()
         cpg.close()
         raise HTTPException(403, "Возраст не подходит")
-
     if promo["target_country"] and user_ctr:
         if user_ctr.strip().lower() != promo["target_country"].strip().lower():
             cu.close()
             cpg.close()
             raise HTTPException(403, "Страна не подходит")
-
     nowd = datetime.date.today()
     if promo["active_from"] and nowd < promo["active_from"]:
         cu.close()
@@ -1297,15 +1213,10 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
         cu.close()
         cpg.close()
         raise HTTPException(403, "Срок истёк")
-
     email_lower = acc["email"].strip().lower()
     cache_key = f"antifraud:{email_lower}"
     cached_raw = redis_conn.get(cache_key)
     need_to_call = True
-
-
-
-
     if cached_raw:
         try:
             obj = json.loads(cached_raw)
@@ -1321,7 +1232,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
                         raise HTTPException(403, "Антифрод не пройден")
         except:
             pass
-
     if need_to_call:
         body = {
             "user_email": acc["email"],
@@ -1352,7 +1262,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
             cu.close()
             cpg.close()
             raise HTTPException(403, "Антифрод сервис недоступен")
-
     if promo["mode"] == "COMMON":
         code_val = promo["promo_common"]
     else:
@@ -1366,7 +1275,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
             cpg.close()
             raise HTTPException(403, "Все уникальные коды исчерпаны")
         code_val = free_codes[0]
-
     act_id = make_uuid()
     cu.execute(
         "INSERT INTO promo_activations(id,promo_id,user_id,code_value) VALUES(%s,%s,%s,%s)",
@@ -1374,7 +1282,6 @@ def activate_code(promo_id: str, acc=Depends(current_account)):
     )
     new_used = (promo["used_count"] or 0) + 1
     cu.execute("UPDATE promos SET used_count=%s WHERE id=%s", (new_used, promo_id))
-
     if promo["mode"] == "COMMON":
         if new_used >= promo["max_count"]:
             cu.execute("UPDATE promos SET active=false WHERE id=%s", (promo_id,))
@@ -1403,5 +1310,6 @@ if __name__ == "__main__":
         maybe_port = os.getenv("SERVER_PORT")
         if maybe_port:
             port = int(maybe_port)
-
+            
     uvicorn.run(app, host=host, port=port)
+
