@@ -1,4 +1,6 @@
-# PROMO v2: Promo Code Backend
+# Stage 2 of the Olympiad on industrial development 'PROD'
+
+## PROMO v2: Promo Code Backend
 
 Это ваш личный репозиторий для решения второго этапа в треке Backend.
 Вы можете редактировать файлы **только в директории `solution`**.
